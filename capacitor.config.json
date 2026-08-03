@@ -1,0 +1,12 @@
+{
+  "appId": "com.chezi.inspection",
+  "appName": "车子验车",
+  "webDir": "public",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
