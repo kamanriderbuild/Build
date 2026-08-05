@@ -16,7 +16,6 @@
 </head>
 <body>
   <div id="app">
-    <!-- 首页：验车记录列表 -->
     <section id="view-home" class="view active">
       <header class="topbar">
         <div>
@@ -24,15 +23,14 @@
           <h1>车子验车</h1>
         </div>
         <button id="btn-install" class="ghost-btn" type="button">安装到手机</button>
-        <button id="btn-server-cfg" class="ghost-btn hidden" type="button">电脑地址</button>
       </header>
 
       <div id="browser-warn" class="warn-banner hidden">
-        当前可能在微信/支付宝内置浏览器中。请点右上角「···」选择「在浏览器中打开」，才能添加到主屏幕。
+        当前可能在微信/支付宝内置浏览器中。请点右上角「···」选择「在浏览器中打开」。
       </div>
 
       <div class="hero-panel">
-        <p class="hero-copy">按部位拍照、记录车况，照片自动存入对应文件夹，支持打包下载。</p>
+        <p class="hero-copy">完全离线可用。按部位拍照、填写车况，照片保存在手机本地，可按部位文件夹打包导出。</p>
         <div class="hero-actions">
           <button id="btn-new-record" class="primary-btn" type="button">新建验车记录</button>
           <button id="btn-install-hero" class="secondary-btn" type="button">如何安装到手机</button>
@@ -47,7 +45,6 @@
       <p id="empty-home" class="empty-state">还没有记录，点击上方新建开始验车。</p>
     </section>
 
-    <!-- 新建记录 -->
     <section id="view-create" class="view">
       <header class="topbar">
         <button class="back-btn" data-back="home" type="button" aria-label="返回">←</button>
@@ -70,7 +67,6 @@
       </form>
     </section>
 
-    <!-- 部位总览 -->
     <section id="view-detail" class="view">
       <header class="topbar">
         <button class="back-btn" data-back="home" type="button" aria-label="返回">←</button>
@@ -81,7 +77,7 @@
       </header>
 
       <div class="action-row sticky-actions">
-        <button id="btn-download-all" class="primary-btn flex" type="button">下载全部照片</button>
+        <button id="btn-download-all" class="primary-btn flex" type="button">导出全部照片</button>
         <button id="btn-delete-record" class="danger-btn" type="button">删除</button>
       </div>
 
@@ -96,7 +92,6 @@
       <div id="part-grid" class="part-grid"></div>
     </section>
 
-    <!-- 部位详情：拍照与描述 -->
     <section id="view-part" class="view">
       <header class="topbar">
         <button class="back-btn" data-back="detail" type="button" aria-label="返回">←</button>
@@ -119,31 +114,11 @@
           拍照 / 选图
           <input id="photo-input" type="file" accept="image/*" capture="environment" multiple hidden />
         </label>
-        <button id="btn-download-part" class="ghost-btn" type="button">下载本部位</button>
+        <button id="btn-download-part" class="ghost-btn" type="button">导出本部位</button>
       </div>
 
       <div id="photo-grid" class="photo-grid"></div>
       <p id="empty-photos" class="empty-state">暂无照片，点击上方拍照添加。</p>
-    </section>
-
-    <!-- APK：电脑服务地址配置 -->
-    <section id="view-server" class="view">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">SERVER</p>
-          <h1>连接电脑</h1>
-        </div>
-      </header>
-      <p id="server-setup-msg" class="hint" style="margin-bottom:14px">
-        APK 需要连接电脑上的验车服务。请保证手机与电脑同一 Wi‑Fi，电脑已运行 npm start。
-      </p>
-      <form id="form-server" class="form-stack">
-        <label>
-          <span>电脑地址（IP:端口）</span>
-          <input id="server-base-input" name="server" type="text" placeholder="192.168.3.67:3000" inputmode="url" autocomplete="off" />
-        </label>
-        <button id="btn-save-server" class="primary-btn" type="submit">保存并连接</button>
-      </form>
     </section>
   </div>
 
@@ -156,10 +131,10 @@
   <div id="install-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="install-title">
     <div class="modal-card">
       <div class="modal-head">
-        <h2 id="install-title">安装到手机主屏幕</h2>
+        <h2 id="install-title">安装到手机</h2>
         <button id="install-close" class="modal-x" type="button" aria-label="关闭">×</button>
       </div>
-      <p class="modal-lead">网页版不能像应用商店那样直接装 APK。正确做法是「添加到主屏幕」，图标和用法跟 App 一样。</p>
+      <p class="modal-lead">本应用可完全离线使用，数据保存在手机。推荐安装 APK，或把网页添加到主屏幕。</p>
 
       <div id="install-native-wrap" class="hidden">
         <button id="btn-native-install" class="primary-btn full" type="button">一键安装（系统弹窗）</button>
@@ -167,43 +142,29 @@
       </div>
 
       <div id="install-ios" class="install-steps hidden">
-        <h3>iPhone / iPad（必须用 Safari）</h3>
+        <h3>iPhone / iPad（Safari）</h3>
         <ol>
-          <li>用 <strong>Safari</strong> 打开本页面（不要用微信内置浏览器）</li>
-          <li>点底部分享按钮 <strong>□↑</strong></li>
-          <li>下滑找到并点 <strong>添加到主屏幕</strong></li>
-          <li>点右上角 <strong>添加</strong></li>
+          <li>用 Safari 打开本页面</li>
+          <li>点分享 □↑ → 添加到主屏幕</li>
         </ol>
       </div>
 
       <div id="install-android" class="install-steps hidden">
-        <h3>安卓手机（推荐 Chrome）</h3>
+        <h3>安卓</h3>
         <ol>
-          <li>用 <strong>Chrome</strong> 打开本页面（不要用微信）</li>
-          <li>点右上角菜单 <strong>⋮</strong></li>
-          <li>选择 <strong>添加到主屏幕</strong> 或 <strong>安装应用</strong></li>
-          <li>确认添加后，桌面会出现「车子验车」图标</li>
+          <li>优先安装 APK（完全离线）</li>
+          <li>或用 Chrome 打开后：菜单 ⋮ → 添加到主屏幕</li>
         </ol>
       </div>
 
       <div id="install-desktop" class="install-steps hidden">
-        <h3>在电脑上给手机安装</h3>
-        <ol>
-          <li>保证手机和电脑连同一个 Wi‑Fi</li>
-          <li>手机浏览器打开下面的地址，或扫描二维码</li>
-          <li>打开后再按手机系统步骤「添加到主屏幕」</li>
-        </ol>
-        <div id="access-urls" class="url-list"></div>
-        <div id="qr-box" class="qr-box hidden">
-          <img id="qr-img" alt="手机访问二维码" />
-          <p class="hint">用手机扫码打开</p>
-        </div>
+        <h3>电脑提示</h3>
+        <p class="hint">请用手机安装 APK，或在手机浏览器打开后添加到主屏幕。无需连接电脑局域网。</p>
       </div>
-
-      <p class="hint">装好后从桌面图标进入即可使用；电脑上的 <code>npm start</code> 服务需要保持运行，照片才会保存到电脑文件夹。</p>
     </div>
   </div>
 
+  <script src="js/jszip.min.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
