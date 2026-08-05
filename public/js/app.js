@@ -1,31 +1,75 @@
+const PARTS = [
+  '前机盖', '前保险杠', '左前大灯', '右前大灯', '左前叶子板', '右前叶子板',
+  '左前门', '右前门', '左后叶子板', '右后叶子板', '后尾盖', '备胎槽',
+  '左后尾灯', '右后尾灯', '左A柱', '右A柱', '左B柱', '右B柱', '左C柱', '右C柱',
+  '左下裙边', '右下裙边', '座椅', '顶蓬'
+];
+
+const DB_NAME = 'chezi-inspection';
+const DB_VERSION = 1;
+
 const state = {
   view: 'home',
   records: [],
   current: null,
   currentPart: null,
-  deferredInstall: null
+  deferredInstall: null,
+  objectUrls: []
 };
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 
-function isNativeApp() {
-  return !!(
-    window.__CHEZI_NATIVE__ ||
-    (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
-  );
+function uid() {
+  return (crypto.randomUUID && crypto.randomUUID()) ||
+    `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function getServerBase() {
-  if (!isNativeApp()) return '';
-  return (localStorage.getItem('serverBase') || '').replace(/\/$/, '');
+function emptyPartsMeta() {
+  return Object.fromEntries(PARTS.map((p) => [p, { description: '', photos: [] }]));
 }
 
-function assetUrl(url) {
-  if (!url) return url;
-  if (/^https?:\/\//i.test(url)) return url;
-  const base = getServerBase();
-  return base ? `${base}${url.startsWith('/') ? url : `/${url}`}` : url;
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('records')) {
+        db.createObjectStore('records', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('photos')) {
+        const store = db.createObjectStore('photos', { keyPath: 'id' });
+        store.createIndex('byRecord', 'recordId', { unique: false });
+        store.createIndex('byRecordPart', ['recordId', 'part'], { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('无法打开本地数据库'));
+  });
+}
+
+function txDone(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('本地存储失败'));
+    tx.onabort = () => reject(tx.error || new Error('本地存储已中断'));
+  });
+}
+
+function reqDone(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('本地读取失败'));
+  });
+}
+
+async function withStore(storeName, mode, fn) {
+  const db = await openDb();
+  const tx = db.transaction(storeName, mode);
+  const store = tx.objectStore(storeName);
+  const result = await fn(store, tx);
+  await txDone(tx);
+  return result;
 }
 
 function toast(msg) {
@@ -42,21 +86,6 @@ function showView(name) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-async function api(path, options = {}) {
-  const base = getServerBase();
-  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  let res;
-  try {
-    res = await fetch(url, options);
-  } catch (_) {
-    throw new Error(isNativeApp() ? '连不上电脑服务，请检查 IP 与 Wi‑Fi，并确认电脑已运行 npm start' : '网络请求失败');
-  }
-  const ctype = res.headers.get('content-type') || '';
-  const data = ctype.includes('application/json') ? await res.json() : null;
-  if (!res.ok) throw new Error(data?.error || `请求失败 (${res.status})`);
-  return data;
-}
-
 function formatTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -64,9 +93,152 @@ function formatTime(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function revokeObjectUrls() {
+  state.objectUrls.forEach((u) => URL.revokeObjectURL(u));
+  state.objectUrls = [];
+}
+
+function blobUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  state.objectUrls.push(url);
+  return url;
+}
+
+function photoCounts(record) {
+  const counts = {};
+  let total = 0;
+  PARTS.forEach((p) => {
+    const n = (record.parts?.[p]?.photos || []).length;
+    counts[p] = n;
+    total += n;
+  });
+  return { counts, total };
+}
+
+async function listRecords() {
+  const rows = await withStore('records', 'readonly', (store) => reqDone(store.getAll()));
+  return (rows || [])
+    .map((r) => {
+      const { counts, total } = photoCounts(r);
+      return { ...r, photoCounts: counts, photoTotal: total };
+    })
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+
+async function getRecord(id) {
+  const record = await withStore('records', 'readonly', (store) => reqDone(store.get(id)));
+  if (!record) throw new Error('记录不存在');
+  const { counts, total } = photoCounts(record);
+  return { ...record, photoCounts: counts, photoTotal: total, parts: PARTS };
+}
+
+async function createRecord({ plate = '', title = '', note = '' }) {
+  const now = new Date().toISOString();
+  const record = {
+    id: uid(),
+    plate: String(plate).trim(),
+    title: String(title).trim() || (plate ? `${String(plate).trim()} 验车` : '未命名验车'),
+    note: String(note).trim(),
+    createdAt: now,
+    updatedAt: now,
+    parts: emptyPartsMeta()
+  };
+  await withStore('records', 'readwrite', (store) => {
+    store.put(record);
+  });
+  return record;
+}
+
+async function saveRecord(record) {
+  record.updatedAt = new Date().toISOString();
+  await withStore('records', 'readwrite', (store) => {
+    store.put(record);
+  });
+  return record;
+}
+
+async function deleteRecord(id) {
+  const db = await openDb();
+  const tx = db.transaction(['records', 'photos'], 'readwrite');
+  tx.objectStore('records').delete(id);
+  const idx = tx.objectStore('photos').index('byRecord');
+  const photos = await reqDone(idx.getAll(id));
+  (photos || []).forEach((p) => tx.objectStore('photos').delete(p.id));
+  await txDone(tx);
+}
+
+async function setDescription(recordId, part, description) {
+  const record = await getRecord(recordId);
+  if (!record.parts[part]) record.parts[part] = { description: '', photos: [] };
+  record.parts[part].description = String(description || '');
+  await saveRecord(record);
+  return record;
+}
+
+async function addPhotos(recordId, part, files) {
+  const record = await getRecord(recordId);
+  if (!record.parts[part]) record.parts[part] = { description: '', photos: [] };
+
+  const db = await openDb();
+  const tx = db.transaction(['records', 'photos'], 'readwrite');
+  const added = [];
+
+  for (const file of files) {
+    const id = uid();
+    const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop() : 'jpg';
+    const filename = `${new Date().toISOString().replace(/[:.]/g, '-')}_${id.slice(0, 8)}.${ext}`;
+    const photoMeta = { id, filename, createdAt: new Date().toISOString() };
+    tx.objectStore('photos').put({
+      id,
+      recordId,
+      part,
+      filename,
+      mime: file.type || 'image/jpeg',
+      blob: file,
+      createdAt: photoMeta.createdAt
+    });
+    record.parts[part].photos.push(photoMeta);
+    added.push(photoMeta);
+  }
+
+  record.updatedAt = new Date().toISOString();
+  tx.objectStore('records').put(record);
+  await txDone(tx);
+  return added;
+}
+
+async function deletePhoto(recordId, part, filename) {
+  const record = await getRecord(recordId);
+  const partMeta = record.parts[part];
+  if (!partMeta) throw new Error('部位不存在');
+  const photo = partMeta.photos.find((p) => p.filename === filename);
+  if (!photo) throw new Error('照片不存在');
+
+  const db = await openDb();
+  const tx = db.transaction(['records', 'photos'], 'readwrite');
+  tx.objectStore('photos').delete(photo.id);
+  partMeta.photos = partMeta.photos.filter((p) => p.filename !== filename);
+  record.updatedAt = new Date().toISOString();
+  tx.objectStore('records').put(record);
+  await txDone(tx);
+}
+
+async function getPhotoBlob(photoId) {
+  const row = await withStore('photos', 'readonly', (store) => reqDone(store.get(photoId)));
+  if (!row?.blob) throw new Error('照片不存在');
+  return row;
+}
+
 async function loadRecords() {
-  const data = await api('/api/records');
-  state.records = data.records || [];
+  state.records = await listRecords();
   renderHome();
 }
 
@@ -101,17 +273,8 @@ function renderHome() {
   });
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 async function openRecord(id) {
-  const data = await api(`/api/records/${id}`);
-  state.current = data;
+  state.current = await getRecord(id);
   renderDetail();
   showView('detail');
 }
@@ -121,18 +284,17 @@ function renderDetail() {
   if (!r) return;
 
   $('#detail-title').textContent = r.title || r.plate || '验车详情';
-  $('#detail-sub').textContent = [r.plate, r.note].filter(Boolean).join(' · ') || '按部位拍照记录';
+  $('#detail-sub').textContent = [r.plate, r.note].filter(Boolean).join(' · ') || '数据保存在本机，可完全离线使用';
 
-  const parts = r.parts || [];
-  const done = parts.filter((p) => (r.photoCounts?.[p] || 0) > 0).length;
-  $('#progress-text').textContent = `${done} / ${parts.length}`;
-  $('#progress-fill').style.width = `${parts.length ? (done / parts.length) * 100 : 0}%`;
+  const done = PARTS.filter((p) => (r.photoCounts?.[p] || 0) > 0).length;
+  $('#progress-text').textContent = `${done} / ${PARTS.length}`;
+  $('#progress-fill').style.width = `${(done / PARTS.length) * 100}%`;
 
   const grid = $('#part-grid');
-  grid.innerHTML = parts
+  grid.innerHTML = PARTS
     .map((p) => {
       const count = r.photoCounts?.[p] || 0;
-      const desc = r.meta?.parts?.[p]?.description || '';
+      const desc = r.parts?.[p]?.description || '';
       return `
         <article class="part-card ${count ? 'has-photo' : ''}" data-part="${escapeHtml(p)}">
           <h3>${escapeHtml(p)}</h3>
@@ -149,16 +311,18 @@ function renderDetail() {
   });
 }
 
-function openPart(partName) {
+async function openPart(partName) {
+  revokeObjectUrls();
   state.currentPart = partName;
-  const part = state.current?.meta?.parts?.[partName] || { description: '', photos: [] };
+  state.current = await getRecord(state.current.id);
+  const part = state.current.parts?.[partName] || { description: '', photos: [] };
   $('#part-title').textContent = partName;
   $('#part-description').value = part.description || '';
-  renderPhotos(part.photos || []);
+  await renderPhotos(part.photos || []);
   showView('part');
 }
 
-function renderPhotos(photos) {
+async function renderPhotos(photos) {
   const grid = $('#photo-grid');
   const empty = $('#empty-photos');
 
@@ -169,15 +333,17 @@ function renderPhotos(photos) {
   }
 
   empty.classList.add('hidden');
-  grid.innerHTML = photos
-    .map(
-      (p) => `
+  const items = [];
+  for (const p of photos) {
+    const row = await getPhotoBlob(p.id);
+    const url = blobUrl(row.blob);
+    items.push(`
       <div class="photo-item">
-        <img src="${assetUrl(p.url)}" alt="${escapeHtml(p.filename)}" data-url="${assetUrl(p.url)}" loading="lazy" />
+        <img src="${url}" alt="${escapeHtml(p.filename)}" data-url="${url}" loading="lazy" />
         <button class="del" type="button" data-filename="${escapeHtml(p.filename)}" aria-label="删除">×</button>
-      </div>`
-    )
-    .join('');
+      </div>`);
+  }
+  grid.innerHTML = items.join('');
 
   grid.querySelectorAll('img').forEach((img) => {
     img.addEventListener('click', () => openLightbox(img.dataset.url));
@@ -187,23 +353,14 @@ function renderPhotos(photos) {
       e.stopPropagation();
       if (!confirm('删除这张照片？')) return;
       try {
-        await api(
-          `/api/records/${state.current.id}/parts/${encodeURIComponent(state.currentPart)}/photos/${encodeURIComponent(btn.dataset.filename)}`,
-          { method: 'DELETE' }
-        );
-        await refreshCurrent();
-        openPart(state.currentPart);
+        await deletePhoto(state.current.id, state.currentPart, btn.dataset.filename);
+        await openPart(state.currentPart);
         toast('已删除');
       } catch (err) {
         toast(err.message);
       }
     });
   });
-}
-
-async function refreshCurrent() {
-  if (!state.current?.id) return;
-  state.current = await api(`/api/records/${state.current.id}`);
 }
 
 function openLightbox(url) {
@@ -216,159 +373,55 @@ function closeLightbox() {
   $('#lightbox-img').src = '';
 }
 
-function downloadUrl(url) {
+function safeName(name) {
+  return String(name || '验车').replace(/[\\/:*?"<>|]/g, '_');
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = assetUrl(url);
-  a.download = '';
+  a.href = url;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-function bindEvents() {
-  $$('[data-back]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const target = btn.dataset.back;
-      if (target === 'detail') {
-        await refreshCurrent();
-        renderDetail();
-      } else if (target === 'home') {
-        await loadRecords();
-      }
-      showView(target);
-    });
-  });
+async function exportZip({ onlyPart = null } = {}) {
+  if (!state.current) return;
+  if (typeof JSZip === 'undefined') throw new Error('打包组件未加载');
 
-  $('#btn-new-record').addEventListener('click', () => {
-    $('#form-create').reset();
-    showView('create');
-  });
+  const record = await getRecord(state.current.id);
+  const zip = new JSZip();
+  const root = safeName(record.plate || record.title || record.id);
+  const parts = onlyPart ? [onlyPart] : PARTS;
+  let fileCount = 0;
 
-  $('#form-create').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    try {
-      const record = await api('/api/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          plate: fd.get('plate'),
-          title: fd.get('title'),
-          note: fd.get('note')
-        })
-      });
-      toast('已创建');
-      await openRecord(record.id);
-    } catch (err) {
-      toast(err.message);
+  for (const part of parts) {
+    const partMeta = record.parts?.[part];
+    if (!partMeta) continue;
+    const folder = zip.folder(`${root}/${part}`);
+    if (partMeta.description) {
+      folder.file('车况描述.txt', partMeta.description);
     }
-  });
-
-  $('#btn-download-all').addEventListener('click', () => {
-    if (!state.current) return;
-    downloadUrl(`/api/records/${state.current.id}/download`);
-    toast('开始打包下载');
-  });
-
-  $('#btn-delete-record').addEventListener('click', async () => {
-    if (!state.current) return;
-    if (!confirm('确定删除整条验车记录及全部照片？')) return;
-    try {
-      await api(`/api/records/${state.current.id}`, { method: 'DELETE' });
-      state.current = null;
-      toast('已删除');
-      await loadRecords();
-      showView('home');
-    } catch (err) {
-      toast(err.message);
+    for (const p of partMeta.photos || []) {
+      const row = await getPhotoBlob(p.id);
+      folder.file(p.filename, row.blob);
+      fileCount += 1;
     }
-  });
+  }
 
-  $('#btn-save-desc').addEventListener('click', async () => {
-    if (!state.current || !state.currentPart) return;
-    try {
-      await api(
-        `/api/records/${state.current.id}/parts/${encodeURIComponent(state.currentPart)}/description`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description: $('#part-description').value })
-        }
-      );
-      await refreshCurrent();
-      toast('描述已保存');
-    } catch (err) {
-      toast(err.message);
-    }
-  });
+  if (!fileCount && !onlyPart) throw new Error('暂无照片可导出');
+  if (!fileCount && onlyPart) throw new Error('该部位暂无照片');
 
-  $('#btn-download-part').addEventListener('click', () => {
-    if (!state.current || !state.currentPart) return;
-    downloadUrl(
-      `/api/records/${state.current.id}/parts/${encodeURIComponent(state.currentPart)}/download`
-    );
-    toast('开始下载本部位');
-  });
-
-  $('#photo-input').addEventListener('change', async (e) => {
-    const files = [...(e.target.files || [])];
-    e.target.value = '';
-    if (!files.length || !state.current || !state.currentPart) return;
-
-    const fd = new FormData();
-    files.forEach((f) => fd.append('photos', f));
-
-    try {
-      toast(`上传中 ${files.length} 张…`);
-      await api(
-        `/api/records/${state.current.id}/parts/${encodeURIComponent(state.currentPart)}/photos`,
-        { method: 'POST', body: fd }
-      );
-      await refreshCurrent();
-      openPart(state.currentPart);
-      toast('上传成功');
-    } catch (err) {
-      toast(err.message);
-    }
-  });
-
-  $('#lightbox-close').addEventListener('click', closeLightbox);
-  $('#lightbox').addEventListener('click', (e) => {
-    if (e.target.id === 'lightbox') closeLightbox();
-  });
-
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    state.deferredInstall = e;
-    $('#install-native-wrap').classList.remove('hidden');
-  });
-
-  const openInstall = () => openInstallModal();
-  $('#btn-install')?.addEventListener('click', openInstall);
-  $('#btn-install-hero')?.addEventListener('click', openInstall);
-  $('#install-close')?.addEventListener('click', closeInstallModal);
-  $('#install-modal')?.addEventListener('click', (e) => {
-    if (e.target.id === 'install-modal') closeInstallModal();
-  });
-
-  $('#btn-native-install')?.addEventListener('click', async () => {
-    if (!state.deferredInstall) {
-      toast('请按下方手动步骤添加到主屏幕');
-      return;
-    }
-    state.deferredInstall.prompt();
-    await state.deferredInstall.userChoice;
-    state.deferredInstall = null;
-    $('#install-native-wrap')?.classList.add('hidden');
-    toast('请按系统提示完成安装');
-  });
-
-  $('#btn-server-cfg')?.addEventListener('click', () => showServerSetup('修改电脑服务地址'));
-  $('#btn-save-server')?.addEventListener('click', saveServerConfig);
-  $('#form-server')?.addEventListener('submit', (e) => {
-    e.preventDefault();
-    saveServerConfig();
-  });
+  toast('正在打包…');
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const name = onlyPart
+    ? `${safeName(record.plate || record.title)}_${onlyPart}.zip`
+    : `${safeName(record.plate || record.title)}_验车照片.zip`;
+  triggerDownload(blob, name);
+  toast('已导出到手机');
 }
 
 function isIos() {
@@ -385,132 +438,179 @@ function isStandalone() {
     navigator.standalone === true;
 }
 
+function isNativeApp() {
+  return !!(
+    window.__CHEZI_NATIVE__ ||
+    (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) ||
+    location.protocol === 'file:'
+  );
+}
+
 function isInAppBrowser() {
   const ua = navigator.userAgent || '';
   return /MicroMessenger|WeiBo|QQ\//i.test(ua) ||
     (/Android/i.test(ua) && /; wv\)/i.test(ua));
 }
 
-async function openInstallModal() {
-  const modal = $('#install-modal');
-  modal.classList.remove('hidden');
+function bindEvents() {
+  $$('[data-back]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const target = btn.dataset.back;
+      try {
+        if (target === 'detail') {
+          state.current = await getRecord(state.current.id);
+          renderDetail();
+        } else if (target === 'home') {
+          revokeObjectUrls();
+          await loadRecords();
+        }
+        showView(target);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+  });
 
-  $('#install-ios').classList.toggle('hidden', !isIos());
-  $('#install-android').classList.toggle('hidden', !isAndroid());
-  // 电脑端或无法识别时，显示扫码指引；手机也显示本机地址方便复制
-  const showDesktopHelp = !isIos() && !isAndroid();
-  $('#install-desktop').classList.remove('hidden');
-  if (showDesktopHelp) {
-    $('#install-ios').classList.add('hidden');
-    $('#install-android').classList.add('hidden');
-  }
+  $('#btn-new-record').addEventListener('click', () => {
+    $('#form-create').reset();
+    showView('create');
+  });
 
-  if (state.deferredInstall) {
-    $('#install-native-wrap').classList.remove('hidden');
-  }
-
-  try {
-    const info = await api('/api/access-info');
-    const list = $('#access-urls');
-    const urls = info.urls || [];
-    list.innerHTML = urls
-      .map((u) => `<a class="url-chip" href="${u}" target="_blank" rel="noopener">${u}</a>`)
-      .join('') || `<span class="hint">当前地址：${location.origin}</span>`;
-
-    if (info.qrDataUrl) {
-      $('#qr-img').src = info.qrDataUrl;
-      $('#qr-box').classList.remove('hidden');
-    } else {
-      $('#qr-box').classList.add('hidden');
+  $('#form-create').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      const record = await createRecord({
+        plate: fd.get('plate'),
+        title: fd.get('title'),
+        note: fd.get('note')
+      });
+      toast('已创建（保存在本机）');
+      await openRecord(record.id);
+    } catch (err) {
+      toast(err.message);
     }
-  } catch (_) {
-    $('#access-urls').innerHTML = `<a class="url-chip" href="${location.origin}">${location.origin}</a>`;
-  }
+  });
+
+  $('#btn-download-all').addEventListener('click', async () => {
+    try {
+      await exportZip();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#btn-delete-record').addEventListener('click', async () => {
+    if (!state.current) return;
+    if (!confirm('确定删除整条验车记录及全部照片？')) return;
+    try {
+      await deleteRecord(state.current.id);
+      state.current = null;
+      revokeObjectUrls();
+      toast('已删除');
+      await loadRecords();
+      showView('home');
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#btn-save-desc').addEventListener('click', async () => {
+    if (!state.current || !state.currentPart) return;
+    try {
+      state.current = await setDescription(
+        state.current.id,
+        state.currentPart,
+        $('#part-description').value
+      );
+      toast('描述已保存');
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#btn-download-part').addEventListener('click', async () => {
+    try {
+      await exportZip({ onlyPart: state.currentPart });
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#photo-input').addEventListener('change', async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length || !state.current || !state.currentPart) return;
+    try {
+      toast(`保存中 ${files.length} 张…`);
+      await addPhotos(state.current.id, state.currentPart, files);
+      await openPart(state.currentPart);
+      toast('已保存到本机');
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#lightbox-close').addEventListener('click', closeLightbox);
+  $('#lightbox').addEventListener('click', (e) => {
+    if (e.target.id === 'lightbox') closeLightbox();
+  });
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    state.deferredInstall = e;
+    $('#install-native-wrap')?.classList.remove('hidden');
+  });
+
+  const openInstall = () => openInstallModal();
+  $('#btn-install')?.addEventListener('click', openInstall);
+  $('#btn-install-hero')?.addEventListener('click', openInstall);
+  $('#install-close')?.addEventListener('click', () => $('#install-modal').classList.add('hidden'));
+  $('#install-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'install-modal') $('#install-modal').classList.add('hidden');
+  });
+  $('#btn-native-install')?.addEventListener('click', async () => {
+    if (!state.deferredInstall) {
+      toast('请按下方手动步骤添加到主屏幕');
+      return;
+    }
+    state.deferredInstall.prompt();
+    await state.deferredInstall.userChoice;
+    state.deferredInstall = null;
+    toast('请按系统提示完成安装');
+  });
 }
 
-function closeInstallModal() {
-  $('#install-modal').classList.add('hidden');
+function openInstallModal() {
+  $('#install-modal').classList.remove('hidden');
+  $('#install-ios')?.classList.toggle('hidden', !isIos());
+  $('#install-android')?.classList.toggle('hidden', !isAndroid());
+  const desktop = !isIos() && !isAndroid();
+  $('#install-desktop')?.classList.toggle('hidden', !desktop);
+  if (state.deferredInstall) $('#install-native-wrap')?.classList.remove('hidden');
+}
+
+function initUiHints() {
+  $('#btn-server-cfg')?.classList.add('hidden');
+  if (isNativeApp() || isStandalone()) {
+    $('#btn-install')?.classList.add('hidden');
+    $('#btn-install-hero')?.classList.add('hidden');
+  }
+  if (!isNativeApp() && isInAppBrowser()) {
+    $('#browser-warn')?.classList.remove('hidden');
+  }
 }
 
 async function registerSW() {
-  if (!('serviceWorker' in navigator)) return;
+  if (isNativeApp() || !('serviceWorker' in navigator)) return;
   try {
-    await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.register('sw.js');
   } catch (_) {
     /* ignore */
   }
 }
 
-function initInstallHints() {
-  if (isNativeApp()) {
-    $('#btn-install')?.classList.add('hidden');
-    $('#btn-install-hero')?.classList.add('hidden');
-    $('#btn-server-cfg')?.classList.remove('hidden');
-    return;
-  }
-  if (isInAppBrowser()) {
-    $('#browser-warn').classList.remove('hidden');
-  }
-  if (isStandalone()) {
-    $('#btn-install').classList.add('hidden');
-    $('#btn-install-hero').classList.add('hidden');
-  }
-}
-
-function normalizeServerInput(raw) {
-  let v = String(raw || '').trim();
-  if (!v) return '';
-  if (!/^https?:\/\//i.test(v)) v = `http://${v}`;
-  return v.replace(/\/$/, '');
-}
-
-async function ensureServerConfig() {
-  if (!isNativeApp()) return true;
-  let base = getServerBase();
-  if (!base) {
-    showServerSetup('请填写电脑局域网地址，例如 192.168.3.67:3000');
-    return false;
-  }
-  try {
-    await api('/api/parts');
-    return true;
-  } catch (err) {
-    showServerSetup(err.message);
-    return false;
-  }
-}
-
-function showServerSetup(msg) {
-  const input = $('#server-base-input');
-  if (input && !input.value) input.value = getServerBase().replace(/^https?:\/\//, '') || '192.168.3.67:3000';
-  if (msg) $('#server-setup-msg').textContent = msg;
-  showView('server');
-}
-
-async function saveServerConfig() {
-  const base = normalizeServerInput($('#server-base-input').value);
-  if (!base) {
-    toast('请输入电脑地址');
-    return;
-  }
-  localStorage.setItem('serverBase', base);
-  try {
-    await api('/api/parts');
-    toast('连接成功');
-    await loadRecords();
-    showView('home');
-  } catch (err) {
-    toast(err.message);
-  }
-}
-
 bindEvents();
-initInstallHints();
-
-(async () => {
-  const ok = await ensureServerConfig();
-  if (ok) {
-    loadRecords().catch((err) => toast(err.message));
-  }
-})();
+initUiHints();
+loadRecords().catch((err) => toast(err.message || '本地数据库初始化失败'));
 registerSW();
