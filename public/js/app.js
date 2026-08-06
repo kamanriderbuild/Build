@@ -424,9 +424,66 @@ async function buildReportParts(record, onlyPart) {
   }));
 }
 
+async function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-lib="${src}"]`);
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error(`加载失败: ${src}`)));
+      // If already loaded earlier, resolve on next tick
+      setTimeout(() => resolve(), 0);
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = false;
+    s.dataset.lib = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`加载失败: ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+async function ensureExportLibs() {
+  if (typeof JSZip !== 'undefined' && window.CheziDocx) return;
+
+  const candidates = [
+    'js/export-libs.js',
+    './js/export-libs.js',
+    'js/jszip.min.js'
+  ];
+
+  let lastErr = null;
+  for (const src of candidates) {
+    try {
+      await loadScript(src);
+      if (typeof JSZip !== 'undefined' && !window.CheziDocx) {
+        await loadScript(src.includes('export-libs') ? src : 'js/docx-export.js');
+      }
+      if (typeof JSZip !== 'undefined') break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (typeof JSZip === 'undefined') {
+    throw new Error((lastErr && lastErr.message) || '导出组件未加载，请重装含 js/export-libs.js 的新版 APK');
+  }
+  if (!window.CheziDocx) {
+    try {
+      await loadScript('js/docx-export.js');
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  if (!window.CheziDocx) {
+    throw new Error('Word 组件未加载，请确认 APK 已包含 js/docx-export.js 或 js/export-libs.js');
+  }
+}
+
 async function exportWord({ onlyPart = null, share = false } = {}) {
   if (!state.current) return;
-  if (!window.CheziDocx) throw new Error('Word 导出组件未加载');
+  await ensureExportLibs();
 
   const record = await getRecord(state.current.id);
   const parts = await buildReportParts(record, onlyPart);
@@ -459,7 +516,7 @@ async function exportWord({ onlyPart = null, share = false } = {}) {
 
 async function exportZip({ onlyPart = null } = {}) {
   if (!state.current) return;
-  if (typeof JSZip === 'undefined') throw new Error('打包组件未加载');
+  await ensureExportLibs();
 
   const record = await getRecord(state.current.id);
   const zip = new JSZip();
