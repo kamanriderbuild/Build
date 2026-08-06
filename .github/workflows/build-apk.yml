@@ -27,6 +27,10 @@ jobs:
           rm -rf android-apk/app/src/main/assets/www
           mkdir -p android-apk/app/src/main/assets/www
           cp -R public/* android-apk/app/src/main/assets/www/
+          test -f android-apk/app/src/main/assets/www/js/export-libs.js
+          test -f android-apk/app/src/main/assets/www/js/app.js
+          test -f android-apk/app/src/main/assets/www/index.html
+          grep -q 'export-libs.js' android-apk/app/src/main/assets/www/index.html
 
       - name: Make gradlew executable
         run: chmod +x android-apk/gradlew
