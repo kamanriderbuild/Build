@@ -385,7 +385,76 @@ function triggerDownload(blob, filename) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function shareOrDownload(blob, filename) {
+  const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: filename,
+        text: '车子验车报告'
+      });
+      toast('已打开系统分享');
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        toast('已取消分享');
+        return;
+      }
+    }
+  }
+  triggerDownload(blob, filename);
+  toast('已保存到手机，可用微信/QQ 发送该文件');
+}
+
+function formatReportTime(iso) {
+  if (!iso) return formatTime(new Date().toISOString());
+  return formatTime(iso);
+}
+
+async function buildReportParts(record, onlyPart) {
+  const names = onlyPart ? [onlyPart] : PARTS;
+  return names.map((name) => ({
+    name,
+    description: record.parts?.[name]?.description || '',
+    photos: record.parts?.[name]?.photos || []
+  }));
+}
+
+async function exportWord({ onlyPart = null, share = false } = {}) {
+  if (!state.current) return;
+  if (!window.CheziDocx) throw new Error('Word 导出组件未加载');
+
+  const record = await getRecord(state.current.id);
+  const parts = await buildReportParts(record, onlyPart);
+  const hasContent = parts.some(
+    (p) => (p.description && p.description.trim()) || (p.photos && p.photos.length)
+  );
+  if (!hasContent) throw new Error(onlyPart ? '该部位暂无内容可导出' : '暂无照片或描述可导出');
+
+  toast(share ? '正在生成并准备分享…' : '正在生成 Word…');
+  const blob = await CheziDocx.buildInspectionDocx({
+    title: record.title || `${record.plate || '车辆'}验车报告`,
+    plate: record.plate || '',
+    note: record.note || '',
+    createdAt: formatReportTime(new Date().toISOString()),
+    parts,
+    onlyPart,
+    getPhotoBlob
+  });
+
+  const name = onlyPart
+    ? `${safeName(record.plate || record.title)}_${onlyPart}.docx`
+    : `${safeName(record.plate || record.title)}_验车报告.docx`;
+
+  if (share) await shareOrDownload(blob, name);
+  else {
+    triggerDownload(blob, name);
+    toast('Word 已导出');
+  }
 }
 
 async function exportZip({ onlyPart = null } = {}) {
@@ -415,13 +484,13 @@ async function exportZip({ onlyPart = null } = {}) {
   if (!fileCount && !onlyPart) throw new Error('暂无照片可导出');
   if (!fileCount && onlyPart) throw new Error('该部位暂无照片');
 
-  toast('正在打包…');
+  toast('正在打包照片…');
   const blob = await zip.generateAsync({ type: 'blob' });
   const name = onlyPart
     ? `${safeName(record.plate || record.title)}_${onlyPart}.zip`
     : `${safeName(record.plate || record.title)}_验车照片.zip`;
   triggerDownload(blob, name);
-  toast('已导出到手机');
+  toast('照片 ZIP 已导出');
 }
 
 function isIos() {
@@ -494,6 +563,22 @@ function bindEvents() {
 
   $('#btn-download-all').addEventListener('click', async () => {
     try {
+      await exportWord();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#btn-share-all')?.addEventListener('click', async () => {
+    try {
+      await exportWord({ share: true });
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#btn-export-zip')?.addEventListener('click', async () => {
+    try {
       await exportZip();
     } catch (err) {
       toast(err.message);
@@ -531,7 +616,15 @@ function bindEvents() {
 
   $('#btn-download-part').addEventListener('click', async () => {
     try {
-      await exportZip({ onlyPart: state.currentPart });
+      await exportWord({ onlyPart: state.currentPart });
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('#btn-share-part')?.addEventListener('click', async () => {
+    try {
+      await exportWord({ onlyPart: state.currentPart, share: true });
     } catch (err) {
       toast(err.message);
     }
