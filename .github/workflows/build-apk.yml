@@ -24,13 +24,56 @@ jobs:
 
       - name: Sync web assets into APK
         run: |
+          set -e
           rm -rf android-apk/app/src/main/assets/www
           mkdir -p android-apk/app/src/main/assets/www
-          cp -R public/* android-apk/app/src/main/assets/www/
-          test -f android-apk/app/src/main/assets/www/js/export-libs.js
-          test -f android-apk/app/src/main/assets/www/js/app.js
-          test -f android-apk/app/src/main/assets/www/index.html
-          grep -q 'export-libs.js' android-apk/app/src/main/assets/www/index.html
+          cp -R public/. android-apk/app/src/main/assets/www/
+
+          WWW="android-apk/app/src/main/assets/www"
+          mkdir -p "$WWW/js"
+
+          # Ensure JSZip exists (may be missing if not uploaded to GitHub)
+          if [ ! -f "$WWW/js/jszip.min.js" ]; then
+            echo "jszip.min.js missing, downloading..."
+            curl -fsSL -o "$WWW/js/jszip.min.js" \
+              "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"
+          fi
+
+          # Ensure docx-export exists
+          if [ ! -f "$WWW/js/docx-export.js" ]; then
+            echo "ERROR: public/js/docx-export.js is missing from the repository"
+            ls -la "$WWW/js" || true
+            exit 1
+          fi
+
+          # Always rebuild export-libs.js from components
+          {
+            echo "/* export-libs: jszip + docx-export (generated in CI) */"
+            cat "$WWW/js/jszip.min.js"
+            echo ";"
+            cat "$WWW/js/docx-export.js"
+          } > "$WWW/js/export-libs.js"
+
+          # Ensure index.html loads export-libs.js before app.js
+          if [ ! -f "$WWW/index.html" ]; then
+            echo "ERROR: public/index.html is missing"
+            exit 1
+          fi
+          if ! grep -q 'export-libs.js' "$WWW/index.html"; then
+            # Insert script tag before app.js if possible, otherwise before </body>
+            if grep -q 'js/app.js' "$WWW/index.html"; then
+              sed -i 's#<script src="js/app.js"></script>#<script src="js/export-libs.js"></script>\n  <script src="js/app.js"></script>#' "$WWW/index.html"
+            else
+              sed -i 's#</body>#  <script src="js/export-libs.js"></script>\n</body>#' "$WWW/index.html"
+            fi
+          fi
+
+          test -f "$WWW/js/export-libs.js"
+          test -f "$WWW/js/app.js"
+          test -f "$WWW/index.html"
+          grep -q 'export-libs.js' "$WWW/index.html"
+          echo "Web assets synced OK"
+          ls -lh "$WWW/js"
 
       - name: Make gradlew executable
         run: chmod +x android-apk/gradlew
